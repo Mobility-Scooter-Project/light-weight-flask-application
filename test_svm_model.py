@@ -1,12 +1,15 @@
 from flask import Flask, request, jsonify
 import requests
 import tempfile
+import time
 import cv2
 import mediapipe as mp
 import numpy as np
 import tensorflow as tf
 from mutils import convert
+import stats_model_testing as stats
 import os
+import svm_testing as svm
 
 # Load the model from local directory
 MODEL_NAME = "trained_with_20_files"
@@ -20,30 +23,37 @@ mp_pose = mp.solutions.pose
 app = Flask(__name__)
 app.debug = True
 
+
 @app.route('/', methods=['POST'])
 def predict():
+    start_time = time.time()
+    print("start time:0.0 seconds")
+
     url = request.get_json()['url']
     filename = download_file(url)
 
+    download_time = time.time()
+    download_time = download_time - start_time
+    print(f"finished download video: {download_time:.4f} seconds")
+
     try:
         # Process video
-        mae_losses = process_video(filename)
-        # Delete the file after processing
+        result = process_video(filename, start_time)
+        statuses = list(result.values())
+
+        # Convert the list of statuses to a string
+        statuses_str = ', '.join(statuses)
         os.remove(filename)
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    if mae_losses:
-        average_loss = sum(mae_losses) / len(mae_losses)
-        result = {"average_loss": average_loss, "all_losses": mae_losses}
-        if average_loss > 0.5:
-            result = "unstable!"
-        else:
-            result = "stable!"
-    else:
-        result = "No pose detected"
+    end_time = time.time()
+    finish_everything = end_time - start_time
+    print(f"finished everything: {finish_everything:.4f} seconds")
+    
+    return jsonify(statuses_str)
 
-    return jsonify(result)
 
 def download_file(url):
     r = requests.get(url, stream=True)
@@ -55,30 +65,46 @@ def download_file(url):
                 f.write(chunk)
     return temp.name
 
-def process_video(video_file):
+
+def process_video(video_file, start_time):
     cap = cv2.VideoCapture(video_file)
     pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-    mae_losses = []  # Store all the losses
+
+    frame_data = []  # This will store the 2D array with 3-length sub-arrays
+
     try:
-        frame_data = []
         while cap.isOpened():
             success, image = cap.read()
             if not success:
-                break
+                break  # Exit loop if no more frames
+
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             image.flags.writeable = False
             results = pose.process(image)
-            if results.pose_landmarks is not None:
-                converted_landmarks = convert(results.pose_world_landmarks.landmark)
-                frame_data.append(converted_landmarks)
-                if len(frame_data) == 16:
-                    mae_loss = model.evaluate(np.array([frame_data]), np.array([frame_data]), verbose=0)[0]
-                    mae_losses.append(mae_loss)
-                    frame_data = []
 
+            if results.pose_landmarks is not None:
+                # Assuming convert function flattens landmarks to a list of 27 elements
+                converted_landmarks = convert(results.pose_world_landmarks.landmark)
+
+                chunk = []
+                for i in range(0, len(converted_landmarks), 3):
+                    chunk.append(converted_landmarks[i])
+                    chunk.append(converted_landmarks[i + 1])
+
+                    if len(chunk) == 18:
+                        frame_data.append(chunk)
+
+        # Now frame_data is prepared as required: a 2D array with sub-arrays of length 3
+        res = svm.test_svm(frame_data, "./svm.joblib", "./svm_parameters.txt")
+
+    except Exception as e:
+        app.logger.error(f"Error in process_video: {str(e)}")
+        return {"error": str(e)}
     finally:
         cap.release()
-    return mae_losses
+
+    return res
+
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000)
