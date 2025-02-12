@@ -55,6 +55,39 @@ def predict():
     return jsonify(statuses_str)
 
 
+@app.route("/verify", methods=['POST'])
+def verify():
+    print("ENDPOINT WAS CALLLEDDDD\n")
+    if "photo" not in request.files:
+        return jsonify("Error: No photo part of request", 400)
+
+    static_pose = mp_pose.Pose(min_detection_confidence=0.5, static_image_mode=True)
+   
+    photo_file = request.files['photo']
+    photo_file_bytes = np.frombuffer(photo_file.read(), np.uint8)
+    image = cv2.imdecode(photo_file_bytes, cv2.IMREAD_COLOR)
+    if image is None:
+        return jsonify({"error": "invalid image file"}), 400
+
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    results = static_pose.process(image)
+
+    if (results.pose_landmarks):
+        print("Patient body identified")
+        return jsonify({"status": "success", "message": "Patient body identified"}), 200
+    else:
+        print("Patient body not detected")
+        return jsonify({"status": "fail", "message": "Patient body not identified"}), 200
+
+
+@app.route("/skibidi", methods=['POST'])
+def test():
+    print("yippee")
+    if "photo" not in request.files:
+        return jsonify("Error: No photo part of request", 400)
+    
+    
+
 def download_file(url):
     r = requests.get(url, stream=True)
     r.raise_for_status()  # Raise exception if invalid response
